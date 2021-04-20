@@ -6,6 +6,7 @@
 class Parser
   DEFAULT_CONFIG_FILE = nil
   DEFAULT_OUTPUT_FILE = File.expand_path(File.join(Dir.pwd, 'output.json')).freeze
+  DEFAULT_S3_PATH = nil
   SERVICES_CONFIG_FILE = File.join(File.dirname(__FILE__), 'services.yaml').freeze
   DEFAULT_FORMAT = 'aws'
   DEFAULT_THREADS = 8
@@ -15,9 +16,11 @@ class Parser
     :regions,
     :services,
     :config_file,
+    :s3,
     :output_file,
     :output_format,
     :threads,
+    :jsonl,
     :collect_user_data,
     :skip_slow,
     :skip_credential_report,
@@ -33,8 +36,8 @@ class Parser
         aws_regions = ['global'].concat(Aws::EC2::Client.new.describe_regions.regions.map(&:region_name))
       end
     rescue Aws::Errors::ServiceError => e
-      puts "\nAWS Error: #{e.code}\n\n"
-      exit
+      warn "\nAWS Error: #{e.code}\n\n"
+      exit(1)
     end
 
     aws_services = YAML.load(File.read(SERVICES_CONFIG_FILE), symbolize_names: true)
@@ -43,9 +46,11 @@ class Parser
       aws_regions,
       aws_services.map { |service| service[:name] },
       DEFAULT_CONFIG_FILE,
+      DEFAULT_S3_PATH,
       DEFAULT_OUTPUT_FILE,
       DEFAULT_FORMAT,
       DEFAULT_THREADS,
+      false,
       false,
       false,
       false,
@@ -93,6 +98,11 @@ class Parser
         args.config_file = config
       end
 
+      # write output file to S3 bucket
+      opts.on('-b', '--s3-bucket [BUCKET:REGION]', 'Write output file to S3 bucket (default: \'\')') do |bucket_with_region|
+        args.s3 = bucket_with_region
+      end
+
       # output file
       opts.on('-o', '--output [OUTPUT]', 'Specify output file (default: output.json)') do |output|
         args.output_file = File.expand_path(File.join(Dir.pwd, output))
@@ -106,6 +116,11 @@ class Parser
       # threads
       opts.on('-t', '--threads [THREADS]', "Specify max threads (default: #{Parser::DEFAULT_THREADS}, max: 128)") do |threads|
         args.threads = threads.to_i if (0..Parser::MAX_THREADS).include?(threads.to_i)
+      end
+
+      # output NDJSON/JSONL format
+      opts.on('-l', '--json-lines', 'Output NDJSON/JSONL format (default: false)') do
+        args.jsonl = true
       end
 
       # collect EC2 instance user data

@@ -6,7 +6,7 @@ module AwsRecon
   class CLI
     def initialize
       # parse options
-      @options = Parser.parse ARGV.length < 1 ? %w[-h] : ARGV
+      @options = Parser.parse ARGV.empty? ? %w[-h] : ARGV
 
       # timing
       @starting = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -15,11 +15,11 @@ module AwsRecon
       @account_id = Aws::STS::Client.new.get_caller_identity.account
 
       # AWS services
-      @aws_services = YAML.load(File.read(SERVICES_CONFIG_FILE), symbolize_names: true)
+      @aws_services = YAML.safe_load(File.read(SERVICES_CONFIG_FILE), symbolize_names: true)
 
       # User config services
       if @options.config_file
-        user_config = YAML.load(File.read(@options.config_file), symbolize_names: true)
+        user_config = YAML.safe_load(File.read(@options.config_file), symbolize_names: true)
 
         @services = user_config[:services]
         @regions = user_config[:regions]
@@ -34,9 +34,9 @@ module AwsRecon
       # formatter
       @formatter = Formatter.new
 
-      unless @options.stream_output
-        puts "\nStarting collection with #{@options.threads} threads...\n"
-      end
+      return unless @options.stream_output
+
+      puts "\nStarting collection with #{@options.threads} threads...\n"
     end
 
     #
@@ -66,13 +66,24 @@ module AwsRecon
     end
 
     #
+    # Format @resources as either
+    #
+    def formatted_json
+      if @options.jsonl
+        @resources.map { |r| JSON.generate(r) }.join("\n")
+      else
+        @resources.to_json
+      end
+    end
+
+    #
     # main wrapper
     #
     def start(_args)
       #
       # global services
       #
-      @aws_services.map { |x| OpenStruct.new(x) }.filter { |s| s.global }.each do |service|
+      @aws_services.map { |x| OpenStruct.new(x) }.filter(&:global).each do |service|
         # user included this service in the args
         next unless @services.include?(service.name)
 
@@ -94,7 +105,7 @@ module AwsRecon
           next unless @regions.include?(region) && !skip_region
 
           # user included this service in the args
-          next unless @services.include?(service.name) || @services.include?(service.alias) # rubocop:disable Layout/LineLength
+          next unless @services.include?(service.name) || @services.include?(service.alias)
 
           collect(service, region)
         end
@@ -102,15 +113,46 @@ module AwsRecon
     rescue Interrupt # ctrl-c
       elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - @starting
 
-      puts "\nStopped early after \x1b[32m#{elapsed.to_i}\x1b[0m seconds.\n"
+      puts "\nStopped early after #{elapsed.to_i} seconds.\n"
     ensure
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - @starting
+
+      puts "\nFinished in #{elapsed.to_i} seconds.\n\n"
+
       # write output file
-      if @options.output_file
-        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - @starting
+      if @options.output_file && !@options.s3
+        puts "Saving resources to #{@options.output_file}.\n\n"
 
-        puts "\nFinished in \x1b[32m#{elapsed.to_i}\x1b[0m seconds. Saving resources to \x1b[32m#{@options.output_file}\x1b[0m.\n\n"
+        File.write(@options.output_file, formatted_json)
+      end
 
-        File.write(@options.output_file, @resources.to_json)
+      # write output file to S3 bucket
+      if @options.s3
+        t = Time.now.utc
+
+        s3_full_object_path = "AWSRecon/#{t.year}/#{t.month}/#{t.day}/#{@account_id}_aws_recon_#{t.to_i}.json.gz"
+
+        begin
+          # get bucket name (and region if not us-east-1)
+          s3_bucket, s3_region = @options.s3.split(':')
+
+          # build IO object and gzip it
+          io = StringIO.new
+          gzip_data = Zlib::GzipWriter.new(io)
+          gzip_data.write(formatted_json)
+          gzip_data.close
+
+          # send it to S3
+          s3_client = Aws::S3::Client.new(region: s3_region || 'us-east-1')
+          s3_resource = Aws::S3::Resource.new(client: s3_client)
+          obj = s3_resource.bucket(s3_bucket).object(s3_full_object_path)
+          obj.put(body: io.string)
+
+          puts "Saving resources to S3 s3://#{s3_bucket}/#{s3_full_object_path}\n\n"
+        rescue Aws::S3::Errors::ServiceError => e
+          puts "Error! - could not save output S3 bucket\n\n"
+          puts "#{e.message} - #{e.code}\n"
+        end
       end
     end
   end

@@ -1,21 +1,21 @@
 [![GitHub Workflow Status (branch)](https://img.shields.io/github/workflow/status/darkbitio/aws-recon/smoke-test/main)](https://github.com/darkbitio/aws-recon/actions?query=branch%3Amain)
 [![Gem Version](https://badge.fury.io/rb/aws_recon.svg)](https://rubygems.org/gems/aws_recon)
-
+[![AWS Service Regions](https://github.com/darkbitio/aws-recon/actions/workflows/check-aws-regions.yml/badge.svg?branch=main&event=schedule)](https://github.com/darkbitio/aws-recon/actions/workflows/check-aws-regions.yml)
 # AWS Recon
 
-A multi-threaded AWS inventory collection tool.
+A multi-threaded AWS security-focused inventory collection tool written in Ruby.
 
-The [creators](https://darkbit.io) of this tool have a recurring need to be able to efficiently collect a large amount of AWS resource attributes and metadata to help clients understand their cloud security posture.
+This tool was created to facilitate efficient collection of a large amount of AWS resource attributes and metadata. It aims to collect nearly everything that is relevant to the security configuration and posture of an AWS environment.
 
-Existing tools (e.g. [AWS Config](https://aws.amazon.com/config)) that do some form of resource collection lack the coverage and specificity we needed. We also needed a tool that produced consistent output that was easily consumed by other tools/systems.
+Existing tools (e.g. [AWS Config](https://aws.amazon.com/config)) that do some form of resource collection lack the coverage and specificity to accurately measure security posture (e.g. detailed resource attribute data, fully parsed policy documents, and nested resource relationships).
 
-Enter AWS Recon, multi-threaded AWS inventory collection tool written in plain Ruby. Though Python tends to dominate the AWS tooling landscape, the [Ruby SDK](https://aws.amazon.com/sdk-for-ruby/) has a few convenient advantages over the [other](https://aws.amazon.com/sdk-for-node-js/) [AWS](https://aws.amazon.com/sdk-for-python/) [SDKs](https://aws.amazon.com/sdk-for-go/) we tested. Specifically, easy handling of automatic retries, paging of large responses, and - with some help - threading huge numbers of requests.
+AWS Recon handles collection from large accounts by taking advantage of automatic retries (either due to network reliability or API throttling), automatic paging of large responses (> 100 resources per API call), and multi-threading parallel requests to speed up collection.
 
 ## Project Goals
 
 - More complete resource coverage than available tools (especially for ECS & EKS)
 - More granular resource detail, including nested related resources in the output
-- Flexible output (console, JSON lines, plain JSON, file, standard out)
+- Flexible output (console, JSON lines, plain JSON, file, S3 bucket, and standard out)
 - Efficient (multi-threaded, rate limited, automatic retries, and automatic result paging)
 - Easy to maintain and extend
 
@@ -31,7 +31,7 @@ Use Docker version 19.x or above to run the pre-built image without having to in
 
 #### Running locally via Ruby
 
-If you already have Ruby installed (2.5.x or 2.6.x), you may want to install the Ruby gem.
+If you already have Ruby installed (2.6.x or 2.7.x), you may want to install the Ruby gem.
 
 ### Installation
 
@@ -54,13 +54,13 @@ To run locally, first install the gem:
 
 ```
 $ gem install aws_recon
-Fetching aws_recon-0.2.28.gem
+Fetching aws_recon-0.5.2.gem
 Fetching aws-sdk-3.0.1.gem
 Fetching parallel-1.20.1.gem
 ...
 Successfully installed aws-sdk-3.0.1
 Successfully installed parallel-1.20.1
-Successfully installed aws_recon-0.2.28
+Successfully installed aws_recon-0.5.2
 ```
 
 Or add it to your Gemfile using `bundle`:
@@ -72,7 +72,7 @@ Resolving dependencies...
 ...
 Using aws-sdk 3.0.1
 Using parallel-1.20.1
-Using aws_recon 0.2.28
+Using aws_recon 0.5.2
 ```
 
 ## Usage
@@ -158,11 +158,35 @@ Finished in 46 seconds. Saving resources to output.json.
 #### Example command line options
 
 ```
+# collect S3 and EC2 global resources, as well as us-east-1 and us-east-2
+
 $ AWS_PROFILE=<profile> aws_recon -s S3,EC2 -r global,us-east-1,us-east-2
 ```
 
 ```
+# collect S3 and EC2 global resources, as well as us-east-1 and us-east-2
+
 $ AWS_PROFILE=<profile> aws_recon --services S3,EC2 --regions global,us-east-1,us-east-2
+```
+
+```
+# save output to S3 bucket
+
+$ AWS_PROFILE=<profile> aws_recon \
+  --services S3,EC2 \
+  --regions global,us-east-1,us-east-2 \
+  --verbose \
+  --s3-bucket my-recon-bucket
+```
+
+```
+# save output to S3 bucket with a home region other than us-east-1
+
+$ AWS_PROFILE=<profile> aws_recon \
+  --services S3,EC2 \
+  --regions global,us-east-1,us-east-2 \
+  --verbose \
+  --s3-bucket my-recon-bucket:us-west-2
 ```
 
 Example [OpenCSPM](https://github.com/OpenCSPM/opencspm) formatted (NDJSON) output.
@@ -225,7 +249,7 @@ Most users will want to limit collection to relevant services and regions. Runni
 ```
 $ aws_recon -h
 
-AWS Recon - AWS Inventory Collector (0.2.28)
+AWS Recon - AWS Inventory Collector (0.5.2)
 
 Usage: aws_recon [options]
     -r, --regions [REGIONS]          Regions to scan, separated by comma (default: all)
@@ -233,9 +257,11 @@ Usage: aws_recon [options]
     -s, --services [SERVICES]        Services to scan, separated by comma (default: all)
     -x, --not-services [SERVICES]    Services to skip, separated by comma (default: none)
     -c, --config [CONFIG]            Specify config file for services & regions (e.g. config.yaml)
+    -b, --s3-bucket [BUCKET:REGION]  Write output file to S3 bucket (default: '')
     -o, --output [OUTPUT]            Specify output file (default: output.json)
     -f, --format [FORMAT]            Specify output format (default: aws)
     -t, --threads [THREADS]          Specify max threads (default: 8, max: 128)
+    -l, --json-lines                 Output NDJSON/JSONL format (default: false)
     -u, --user-data                  Collect EC2 instance user data (default: false)
     -z, --skip-slow                  Skip slow operations (default: false)
     -g, --skip-credential-report     Skip generating IAM credential report (default: false)
@@ -250,6 +276,8 @@ Usage: aws_recon [options]
 #### Output
 
 Output is always some form of JSON - either JSON lines or plain JSON. The output is either written to a file (the default), or written to stdout (with `-j`).
+
+When writing to an S3 bucket, the JSON output is automatically compressed with `gzip`.
 
 ## Support for Manually Enabled Regions
 
@@ -351,7 +379,7 @@ $ cd aws-recon
 Create a sticky gemset if using RVM:
 
 ```
-$ rvm use 2.6.5@aws_recon_dev --create --ruby-version
+$ rvm use 2.7.2@aws_recon_dev --create --ruby-version
 ```
 
 Run `bin/setup` to install dependencies. Then, run `rake test` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.

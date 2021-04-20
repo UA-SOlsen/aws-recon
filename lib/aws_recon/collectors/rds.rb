@@ -68,20 +68,38 @@ class RDS < Mapper
     end
 
     #
-    # describe_db_engine_versions
+    # describe_db_cluster_snapshots
     #
-    unless @options.skip_slow
-      @client.describe_db_engine_versions.each_with_index do |response, page|
-        log(response.context.operation_name, page)
+    @client.describe_db_cluster_snapshots.each_with_index do |response, page|
+      log(response.context.operation_name, page)
 
-        response.db_engine_versions.each do |version|
-          struct = OpenStruct.new(version.to_h)
-          struct.type = 'db_engine_version'
+      response.db_cluster_snapshots.each do |snapshot|
+        log(response.context.operation_name, snapshot.db_cluster_snapshot_identifier)
 
-          resources.push(struct.to_h)
-        end
+        struct = OpenStruct.new(snapshot.to_h)
+        struct.type = 'db_cluster_snapshot'
+        struct.arn = snapshot.db_cluster_snapshot_arn
+        struct.parent_id = snapshot.db_cluster_identifier
+
+        resources.push(struct.to_h)
       end
     end
+
+    #
+    # describe_db_engine_versions
+    #
+    ### unless @options.skip_slow
+    ###   @client.describe_db_engine_versions.each_with_index do |response, page|
+    ###     log(response.context.operation_name, page)
+
+    ###     response.db_engine_versions.each do |version|
+    ###       struct = OpenStruct.new(version.to_h)
+    ###       struct.type = 'db_engine_version'
+
+    ###       resources.push(struct.to_h)
+    ###     end
+    ###   end
+    ### end
 
     resources
   end
